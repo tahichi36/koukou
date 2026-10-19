@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>アイテムスポーンマップ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+<style>
+  html, body { height: 100%; margin: 0; font-family: sans-serif; }
+  #map { height: 100%; background: #1b1b1b; }
+
+  /* 右上のパネル */
+  #panel {
+    position: absolute; top: 10px; right: 10px; z-index: 1000;
+    background: rgba(255,255,255,.95); border-radius: 8px;
+    padding: 10px 12px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    font-size: 14px; max-width: 220px;
+  }
+  #panel h3 { margin: 0 0 6px; font-size: 14px; }
+  #panel label { display: flex; align-items: center; gap: 6px; margin: 4px 0; cursor: pointer; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #555; flex: none; }
+  #status { margin-top: 6px; font-size: 12px; color: #666; }
+  #status.error { color: #c00; font-weight: bold; }
+
+  /* 階層ボタン */
+  #floorBox { display: none; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #ddd; }
+  #floors { display: flex; flex-wrap: wrap; gap: 4px; }
+  #floors button {
+    padding: 6px 10px; border: 1px solid #888; border-radius: 6px;
+    background: #fff; color: #222; cursor: pointer; font-size: 13px;
+  }
+  #floors button.active { background: #1c7ed6; border-color: #1c7ed6; color: #fff; font-weight: bold; }
+
+  /* 座標取得モード */
+  #editbox {
+    position: absolute; bottom: 10px; left: 10px; z-index: 1000;
+    background: #fff8c5; border: 1px solid #c9a800; border-radius: 6px;
+    padding: 8px 10px; font-size: 13px; display: none;
+  }
+
+  /* ポップアップ */
+  .popup-title { font-weight: bold; font-size: 15px; margin-bottom: 2px; }
+  .popup-type { font-size: 12px; color: #666; margin-bottom: 6px; }
+  .popup-img { display: block; width: 100%; max-width: 320px; border-radius: 4px; background: #ddd; }
+  .popup-note { margin-top: 6px; font-size: 13px; }
+  .leaflet-popup-content { min-width: 220px; }
+
+  /* 依頼アイテムの目印（星形） */
+  .quest-icon { font-size: 26px; line-height: 26px; text-align: center; color: #ffd400;
+                text-shadow: 0 0 3px #000, 0 0 3px #000; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="panel">
+  <div id="floorBox">
+    <h3>階層</h3>
+    <div id="floors"></div>
+  </div>
+  <h3>表示するアイテム</h3>
+  <div id="filters"></div>
+  <div id="status">読み込み中…</div>
+</div>
+
+<div id="editbox"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script>
+/* =====================================================
+   設定（ここだけ書き換えればOK）
+   ===================================================== */
+const CONFIG = {
+  // 標準のマップ画像サイズ（ピクセル）。全階層が同じ大きさならこれだけでOK
+  MAP_WIDTH: 9659,
+  MAP_HEIGHT: 8802,
+
+  // 階層の一覧。ボタンはここに書いた順に並びます。
+  //   name  : ボタンに出る名前（スプレッドシートの「階層」列と同じ表記にする）
+  //   image : その階層のマップ画像のファイル名
+  //   width / height : その階層だけ画像の大きさが違うときだけ書く
+  // 階層が1つだけのときは、ボタンは表示されません。
+  FLOORS: [
+    { name: "1階", image: "map_1f.webp", width: 9659, height: 8802 },
+    { name: "2階", image: "map_2f.webp", width: 9632, height: 7216 },
+    { name: "地下", image: "map_b1.webp", width: 6524, height: 5699 }
+  ],
+
+  // Googleスプレッドシートの「ウェブに公開」CSVのURL。
+  // 空のままだと、下のSAMPLE_DATA（試験用データ）が表示されます。
+  SHEET_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRnsrC7wh8CCx3Xu9oSdGhL-Bf13dmHS29iCHePIOL96NTEElcSPvLnJaPd9OrSy4Cz21bI4Gp48Yht/pub?gid=1606556099&single=true&output=csv",
+
+  // スクリーンショット画像を置くフォルダ名
+  IMAGE_DIR: "images/",
+
+  // アイテム種別（スプレッドシートの「種別」列と同じ表記にしてください）
+  TYPES: {
+    "ガソリン":   { color: "#e8590c" },
+    "バッテリー": { color: "#1c7ed6" },
+    "機密文書":   { color: "#2f9e44" },
+    "依頼アイテム": { color: "#ffd400", quest: true }
+  }
+};
+
+/* 試験用データ（SHEET_URLが空のときだけ使われます。階層は空＝最初の階層） */
+const SAMPLE_DATA = [
+  { id: "1F-B001", x: 5000, y: 3500, type: "バッテリー", name: "バッテリー（サンプル）", image: "", note: "1階のサンプルです", floor: "1階" },
+  { id: "1F-D001", x: 4000, y: 6500, type: "機密文書",   name: "機密文書（サンプル）",   image: "", note: "", floor: "1階" },
+  { id: "2F-G001", x: 2000, y: 1500, type: "ガソリン",   name: "ガソリン（サンプル）",   image: "", note: "2階のサンプルです", floor: "2階" },
+  { id: "2F-Q001", x: 7000, y: 2000, type: "依頼アイテム", name: "依頼アイテム（サンプル）", image: "", note: "", floor: "2階" },
+  { id: "B1-G001", x: 3000, y: 3000, type: "ガソリン",   name: "ガソリン（サンプル）",   image: "", note: "地下のサンプルです", floor: "地下" }
+];
+
+/* =====================================================
+   以下は触らなくて大丈夫です
+   ===================================================== */
+const map = L.map("map", {
+  crs: L.CRS.Simple,
+  minZoom: -5,
+  maxZoom: 2,
+  zoomSnap: 0.25,
+  zoomDelta: 0.5,
+  attributionControl: false
+});
+// マップ画像は、丸印より下に表示する専用の層に置く
+map.createPane("mapimg").style.zIndex = 250;
+
+// 階層ごとのデータ（画像・丸印の層・件数）
+const FLOORS = CONFIG.FLOORS.map(f => {
+  const w = f.width || CONFIG.MAP_WIDTH;
+  const h = f.height || CONFIG.MAP_HEIGHT;
+  const bounds = [[0, 0], [h, w]];
+  return {
+    name: f.name, w, h, bounds,
+    layers: {},   // 種別ごとの丸印の層
+    counts: {},   // 種別ごとの件数
+    overlay: L.imageOverlay(f.image, bounds, { pane: "mapimg" })
+  };
+});
+
+// 画像の左上を(0,0)、右へX、下へYとする座標 ⇔ Leafletの座標
+const toLatLng = (f, x, y) => L.latLng(f.h - y, x);
+const toXY = (f, latlng) => ({ x: Math.round(latlng.lng), y: Math.round(f.h - latlng.lat) });
+
+const statusEl = document.getElementById("status");
+const filtersEl = document.getElementById("filters");
+const visible = {};      // 種別ごとの表示ON/OFF（全階層で共通）
+let cur = null;          // 今表示している階層
+let editMarker = null;   // 座標取得モードの目印
+let loaded = false, skipped = 0, usingSample = false;
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function imageSrc(name) {
+  if (!name) return "";
+  return /^https?:\/\//.test(name) ? name : CONFIG.IMAGE_DIR + encodeURIComponent(name);
+}
+
+function popupHtml(r) {
+  const src = imageSrc(r.image);
+  const img = src
+    ? `<img class="popup-img" loading="lazy" src="${escapeHtml(src)}" alt="${escapeHtml(r.name)}"
+            onerror="this.outerHTML='<div class=popup-note>（スクリーンショットは準備中です）</div>'">`
+    : "";
+  return `<div class="popup-title">${escapeHtml(r.name || r.type)}</div>
+          <div class="popup-type">${escapeHtml(r.type)}</div>
+          ${img}
+          ${r.note ? `<div class="popup-note">${escapeHtml(r.note)}</div>` : ""}`;
+}
+
+/* ---- 種別フィルタと、階層ごとの丸印の層をつくる ---- */
+function buildLayers() {
+  Object.entries(CONFIG.TYPES).forEach(([type, t]) => {
+    visible[type] = true;
+    FLOORS.forEach(f => {
+      f.layers[type] = t.quest
+        ? L.layerGroup()                                  // 依頼アイテムはまとめず常に個別表示
+        : L.markerClusterGroup({ maxClusterRadius: 45, showCoverageOnHover: false });
+    });
+
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="checkbox" checked data-type="${escapeHtml(type)}">
+                       <span class="dot" style="background:${t.color}"></span>
+                       <span>${escapeHtml(type)} <small data-count="${escapeHtml(type)}"></small></span>`;
+    filtersEl.appendChild(label);
+  });
+
+  filtersEl.addEventListener("change", e => {
+    const type = e.target.dataset.type;
+    if (!type) return;
+    visible[type] = e.target.checked;
+    const layer = cur && cur.layers[type];
+    if (layer) e.target.checked ? map.addLayer(layer) : map.removeLayer(layer);
+  });
+}
+
+/* ---- 階層ボタン ---- */
+function buildFloorButtons() {
+  if (FLOORS.length <= 1) return;
+  document.getElementById("floorBox").style.display = "block";
+  const box = document.getElementById("floors");
+  FLOORS.forEach(f => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = f.name;
+    b.dataset.floor = f.name;
+    b.addEventListener("click", () => { showFloor(f, true); setFloorParam(f.name); });
+    box.appendChild(b);
+  });
+}
+
+function setFloorParam(name) {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set("floor", name);
+    history.replaceState(null, "", u);
+  } catch (e) { /* 保存できなくても動作に影響なし */ }
+}
+
+/* ---- 階層を切り替える ---- */
+function showFloor(f, keepView) {
+  const prev = cur;
+  const sameSize = prev && prev.w === f.w && prev.h === f.h;
+  const view = (keepView && sameSize) ? { c: map.getCenter(), z: map.getZoom() } : null;
+
+  map.closePopup();
+  if (editMarker) { map.removeLayer(editMarker); editMarker = null; }
+  if (prev) {
+    map.removeLayer(prev.overlay);
+    Object.values(prev.layers).forEach(l => map.removeLayer(l));
+  }
+
+  cur = f;
+  f.overlay.addTo(map);
+  Object.entries(f.layers).forEach(([type, l]) => { if (visible[type]) l.addTo(map); });
+
+  if (view) {
+    // 同じ大きさの階層なら、今見ている位置と拡大率をそのまま引き継ぐ
+    map.setView(view.c, view.z, { animate: false });
+  } else {
+    map.setMaxBounds(null);
+    map.setMinZoom(-5);
+    map.fitBounds(f.bounds);
+    map.setMinZoom(map.getZoom() - 0.5);
+    map.setMaxBounds(L.latLngBounds(f.bounds).pad(0.2));
+  }
+
+  document.querySelectorAll("#floors button").forEach(b =>
+    b.classList.toggle("active", b.dataset.floor === f.name));
+  updateCounts();
+  updateStatus();
+}
+
+function updateCounts() {
+  Object.keys(CONFIG.TYPES).forEach(type => {
+    const el = document.querySelector(`[data-count="${type}"]`);
+    if (el) el.textContent = loaded ? `(${(cur && cur.counts[type]) || 0})` : "";
+  });
+}
+
+function updateStatus() {
+  if (!loaded || !cur) return;
+  const n = Object.values(cur.counts).reduce((a, b) => a + b, 0);
+  const prefix = FLOORS.length > 1 ? `${cur.name}：` : "";
+  statusEl.textContent = `${prefix}${n}件の地点を表示中`
+    + (skipped ? `（${skipped}行は座標・種別・階層名の不備でスキップ）` : "")
+    + (usingSample ? "（試験用データ）" : "");
+}
+
+/* ---- データを丸印にする ---- */
+function addRows(rows) {
+  rows.forEach(r => {
+    const x = parseFloat(r.x), y = parseFloat(r.y);
+    const type = (r.type || "").trim();
+    const t = CONFIG.TYPES[type];
+    const floorName = (r.floor || "").trim();
+    const f = floorName ? FLOORS.find(fl => fl.name === floorName) : FLOORS[0];   // 階層が空なら最初の階層
+    if (!isFinite(x) || !isFinite(y) || !t || !f) { skipped++; return; }
+
+    let marker;
+    if (t.quest) {
+      marker = L.marker(toLatLng(f, x, y), {
+        icon: L.divIcon({ className: "", html: `<div class="quest-icon">★</div>`, iconSize: [26, 26], iconAnchor: [13, 13] })
+      });
+    } else {
+      marker = L.circleMarker(toLatLng(f, x, y), {
+        radius: 8, color: "#fff", weight: 2, fillColor: t.color, fillOpacity: 0.95
+      });
+    }
+    marker.bindPopup(popupHtml({ ...r, type }), { maxWidth: 340 });
+    f.layers[type].addLayer(marker);
+    f.counts[type] = (f.counts[type] || 0) + 1;
+  });
+  loaded = true;
+  updateCounts();
+  updateStatus();
+}
+
+function loadData() {
+  if (!CONFIG.SHEET_URL) {
+    usingSample = true;
+    addRows(SAMPLE_DATA);
+    return;
+  }
+  Papa.parse(CONFIG.SHEET_URL, {
+    download: true,
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: h => ({ "ID": "id", "X": "x", "Y": "y", "X座標": "x", "Y座標": "y",
+                              "種別": "type", "名前": "name", "画像": "image", "画像ファイル名": "image", "メモ": "note",
+                              "階層": "floor", "階": "floor", "フロア": "floor" }[h.trim()] || h.trim().toLowerCase()),
+    complete: res => addRows(res.data),
+    error: err => {
+      console.error("スプレッドシート読み込みエラー:", err);
+      statusEl.textContent = "スプレッドシートを読み込めませんでした。公開設定とURLを確認してください。";
+      statusEl.className = "error";
+    }
+  });
+}
+
+/* ---- 座標取得モード：URLの末尾に ?edit をつけて開く ---- */
+if (new URLSearchParams(location.search).has("edit")) {
+  const box = document.getElementById("editbox");
+  box.style.display = "block";
+  box.textContent = "座標取得モード：マップをクリックすると、その位置の座標をコピーします";
+  map.on("click", e => {
+    if (!cur) return;
+    const { x, y } = toXY(cur, e.latlng);
+    const text = `${x}\t${y}`;           // タブ区切り → スプレッドシートに貼ると X列・Y列に分かれて入る
+    if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+    const fl = FLOORS.length > 1 ? `［${cur.name}］ ` : "";
+    box.textContent = `コピーしました： ${fl}X=${x}  Y=${y}  （スプレッドシートのX列に貼り付け）`;
+    if (editMarker) map.removeLayer(editMarker);
+    editMarker = L.circleMarker(e.latlng, { radius: 6, color: "#f0f", weight: 3, fillOpacity: 0 }).addTo(map);
+  });
+}
+
+buildLayers();
+buildFloorButtons();
+const wanted = new URLSearchParams(location.search).get("floor");   // ?floor=2階 のように指定すると、その階層から開く
+showFloor(FLOORS.find(f => f.name === wanted) || FLOORS[0], false);
+loadData();
+</script>
+</body>
+</html>
