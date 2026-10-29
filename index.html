@@ -56,7 +56,7 @@
   .popup-note { margin-top: 6px; font-size: 13px; }
   .leaflet-popup-content { min-width: 220px; }
 
-  /* 依頼アイテムの目印（星形） */
+  /* Igorの目印（星形） */
   .quest-icon { font-size: 26px; line-height: 26px; text-align: center; color: #ffd400;
                 text-shadow: 0 0 3px #000, 0 0 3px #000; }
 </style>
@@ -116,7 +116,7 @@ const CONFIG = {
     "ガソリン":   { color: "#e8590c", code: "G" },
     "バッテリー": { color: "#1c7ed6", code: "B" },
     "機密文書":   { color: "#2f9e44", code: "D" },
-    "依頼アイテム": { color: "#ffd400", code: "Q", quest: true }
+    "Igor": { color: "#ffd400", code: "Q", quest: true }
   }
 };
 
@@ -125,7 +125,7 @@ const SAMPLE_DATA = [
   { id: "1F-B001", x: 5000, y: 3500, type: "バッテリー", name: "バッテリー（サンプル）", image: "", note: "1階のサンプルです", floor: "1階" },
   { id: "1F-D001", x: 4000, y: 6500, type: "機密文書",   name: "機密文書（サンプル）",   image: "", note: "", floor: "1階" },
   { id: "2F-G001", x: 2000, y: 1500, type: "ガソリン",   name: "ガソリン（サンプル）",   image: "", note: "2階のサンプルです", floor: "2階" },
-  { id: "2F-Q001", x: 7000, y: 2000, type: "依頼アイテム", name: "依頼アイテム（サンプル）", image: "", note: "", floor: "2階" },
+  { id: "2F-Q001", x: 7000, y: 2000, type: "Igor", name: "Igor（サンプル）", image: "", note: "", floor: "2階" },
   { id: "B1-G001", x: 3000, y: 3000, type: "ガソリン",   name: "ガソリン（サンプル）",   image: "", note: "地下のサンプルです", floor: "地下" }
 ];
 
@@ -195,7 +195,7 @@ function buildLayers() {
     visible[type] = true;
     FLOORS.forEach(f => {
       f.layers[type] = t.quest
-        ? L.layerGroup()                                  // 依頼アイテムはまとめず常に個別表示
+        ? L.layerGroup()                                  // Igorはまとめず常に個別表示
         : L.markerClusterGroup({ maxClusterRadius: 45, showCoverageOnHover: false });
     });
 
