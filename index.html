@@ -33,12 +33,21 @@
   }
   #floors button.active { background: #1c7ed6; border-color: #1c7ed6; color: #fff; font-weight: bold; }
 
-  /* 座標取得モード */
+  /* 登録モード */
   #editbox {
     position: absolute; bottom: 10px; left: 10px; z-index: 1000;
     background: #fff8c5; border: 1px solid #c9a800; border-radius: 6px;
     padding: 8px 10px; font-size: 13px; display: none;
+    width: 400px; max-width: calc(100vw - 40px); box-sizing: border-box;
   }
+  .edit-title { font-weight: bold; margin-bottom: 6px; }
+  #editTypes { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 6px; }
+  #editTypes label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .edit-fields { display: flex; gap: 6px; margin-bottom: 6px; }
+  .edit-fields input, #editRow { box-sizing: border-box; padding: 4px 6px; font-size: 13px; border: 1px solid #999; border-radius: 4px; }
+  .edit-fields input { flex: 1; min-width: 0; }
+  #editRow { width: 100%; margin-top: 6px; background: #fff; }
+  #editResult { font-size: 12px; }
 
   /* ポップアップ */
   .popup-title { font-weight: bold; font-size: 15px; margin-bottom: 2px; }
@@ -84,10 +93,11 @@ const CONFIG = {
   //   image : その階層のマップ画像のファイル名
   //   width / height : その階層だけ画像の大きさが違うときだけ書く
   // 階層が1つだけのときは、ボタンは表示されません。
+  //   code : 登録モードで自動作成するIDの頭に付く記号（例：1F-G001 の 1F）
   FLOORS: [
-    { name: "1階", image: "map_1f.webp", width: 9659, height: 8802 },
-    { name: "2階", image: "map_2f.webp", width: 9632, height: 7216 },
-    { name: "地下", image: "map_b1.webp", width: 6524, height: 5699 }
+    { name: "1階", code: "1F", image: "map_1f.webp", width: 9659, height: 8802 },
+    { name: "2階", code: "2F", image: "map_2f.webp", width: 9632, height: 7216 },
+    { name: "地下", code: "B1", image: "map_b1.webp", width: 6524, height: 5699 }
   ],
 
   // Googleスプレッドシートの「ウェブに公開」CSVのURL。
@@ -97,12 +107,16 @@ const CONFIG = {
   // スクリーンショット画像を置くフォルダ名
   IMAGE_DIR: "images/",
 
+  // 登録モードで自動作成する画像ファイル名の拡張子（ID＋この拡張子）
+  IMAGE_EXT: "webp",
+
   // アイテム種別（スプレッドシートの「種別」列と同じ表記にしてください）
+  //   code : 登録モードで自動作成するIDに入る記号（例：1F-G001 の G）
   TYPES: {
-    "ガソリン":   { color: "#e8590c" },
-    "バッテリー": { color: "#1c7ed6" },
-    "機密文書":   { color: "#2f9e44" },
-    "依頼アイテム": { color: "#ffd400", quest: true }
+    "ガソリン":   { color: "#e8590c", code: "G" },
+    "バッテリー": { color: "#1c7ed6", code: "B" },
+    "機密文書":   { color: "#2f9e44", code: "D" },
+    "依頼アイテム": { color: "#ffd400", code: "Q", quest: true }
   }
 };
 
@@ -135,7 +149,7 @@ const FLOORS = CONFIG.FLOORS.map(f => {
   const h = f.height || CONFIG.MAP_HEIGHT;
   const bounds = [[0, 0], [h, w]];
   return {
-    name: f.name, w, h, bounds,
+    name: f.name, code: f.code, w, h, bounds,
     layers: {},   // 種別ごとの丸印の層
     counts: {},   // 種別ごとの件数
     overlay: L.imageOverlay(f.image, bounds, { pane: "mapimg" })
@@ -152,6 +166,7 @@ const visible = {};      // 種別ごとの表示ON/OFF（全階層で共通）
 let cur = null;          // 今表示している階層
 let editMarker = null;   // 座標取得モードの目印
 let loaded = false, skipped = 0, usingSample = false;
+const knownIds = [];     // 表に入っているID（登録モードの連番に使う）
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -276,6 +291,7 @@ function updateStatus() {
 /* ---- データを丸印にする ---- */
 function addRows(rows) {
   rows.forEach(r => {
+    if (r.id) knownIds.push(String(r.id).trim());
     const x = parseFloat(r.x), y = parseFloat(r.y);
     const type = (r.type || "").trim();
     const t = CONFIG.TYPES[type];
@@ -290,7 +306,7 @@ function addRows(rows) {
       });
     } else {
       marker = L.circleMarker(toLatLng(f, x, y), {
-        radius: 8, color: "#fff", weight: 2, fillColor: t.color, fillOpacity: 0.95
+        radius: 8, color: "#fff", weight: 2, fillColor: t.color, fillOpacity: 0.95, bubblingMouseEvents: false
       });
     }
     marker.bindPopup(popupHtml({ ...r, type }), { maxWidth: 340 });
@@ -324,18 +340,74 @@ function loadData() {
   });
 }
 
-/* ---- 座標取得モード：URLの末尾に ?edit をつけて開く ---- */
+/* ---- 登録モード：URLの末尾に ?edit をつけて開く ----
+   階層ボタンで階を選び、種別を選んでマップをクリックすると、
+   スプレッドシートに貼れる1行ぶん（ID・X・Y・種別・名前・画像ファイル名・メモ・階層）をコピーします。 */
 if (new URLSearchParams(location.search).has("edit")) {
   const box = document.getElementById("editbox");
   box.style.display = "block";
-  box.textContent = "座標取得モード：マップをクリックすると、その位置の座標をコピーします";
+  box.innerHTML = `
+    <div class="edit-title">登録モード：種別を選んでマップをクリック → 表の空いている行のA列を選んで貼り付け（Ctrl+V）</div>
+    <div id="editTypes"></div>
+    <div class="edit-fields">
+      <input id="editName" placeholder="名前（空欄なら種別名）">
+      <input id="editNote" placeholder="メモ（任意）">
+    </div>
+    <div id="editResult">マップ上の地点をクリックしてください</div>
+    <input id="editRow" readonly placeholder="コピーされる1行がここに表示されます">`;
+
+  const typesBox = document.getElementById("editTypes");
+  Object.entries(CONFIG.TYPES).forEach(([type, t], i) => {
+    const label = document.createElement("label");
+    label.innerHTML = `<input type="radio" name="editType" value="${escapeHtml(type)}"${i === 0 ? " checked" : ""}>
+                       <span class="dot" style="background:${t.color}"></span><span>${escapeHtml(type)}</span>`;
+    typesBox.appendChild(label);
+  });
+
+  const resultEl = document.getElementById("editResult");
+  const rowEl = document.getElementById("editRow");
+  rowEl.addEventListener("focus", () => rowEl.select());
+  const clean = v => String(v ?? "").replace(/[\t\r\n]+/g, " ").trim();
+  const issued = {};   // この画面で発行した番号（続けて登録しても重複しないように）
+
+  // IDを自動で作る：「階層の記号-種別の記号＋3桁の番号」（例：1F-G012）。表に入っている最大の番号の次を使う
+  function nextId(floor, type) {
+    const prefix = `${clean(floor.code || floor.name)}-${clean(CONFIG.TYPES[type].code || "X")}`;
+    const re = new RegExp("^" + prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(\\d+)$");
+    let max = issued[prefix] || 0;
+    knownIds.forEach(id => { const m = re.exec(id); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+    issued[prefix] = max + 1;
+    return prefix + String(max + 1).padStart(3, "0");
+  }
+
   map.on("click", e => {
     if (!cur) return;
+    const checked = document.querySelector('input[name="editType"]:checked');
+    if (!checked) return;
+    const type = checked.value;
     const { x, y } = toXY(cur, e.latlng);
-    const text = `${x}\t${y}`;           // タブ区切り → スプレッドシートに貼ると X列・Y列に分かれて入る
-    if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
-    const fl = FLOORS.length > 1 ? `［${cur.name}］ ` : "";
-    box.textContent = `コピーしました： ${fl}X=${x}  Y=${y}  （スプレッドシートのX列に貼り付け）`;
+    if (x < 0 || y < 0 || x > cur.w || y > cur.h) {
+      resultEl.textContent = "マップの外です。画像の上をクリックしてください";
+      return;
+    }
+    const id = nextId(cur, type);
+    const name = clean(document.getElementById("editName").value) || type;
+    const note = clean(document.getElementById("editNote").value);
+    const image = `${id}.${CONFIG.IMAGE_EXT || "webp"}`;
+    const row = [id, x, y, type, name, image, note, cur.name].join("\t");
+    rowEl.value = row;
+
+    const summary = `［${cur.name}］ ${id}　X=${x}  Y=${y}　${type}`;
+    const done = ok => {
+      resultEl.textContent = ok ? `コピーしました：${summary}`
+                                : `自動コピーできませんでした。下の欄を押してコピーしてください：${summary}`;
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(row).then(() => done(true), () => { rowEl.focus(); done(false); });
+    } else { rowEl.focus(); done(false); }
+
+    document.getElementById("editName").value = "";
+    document.getElementById("editNote").value = "";
     if (editMarker) map.removeLayer(editMarker);
     editMarker = L.circleMarker(e.latlng, { radius: 6, color: "#f0f", weight: 3, fillOpacity: 0 }).addTo(map);
   });
